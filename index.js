@@ -283,7 +283,7 @@ function build8pmLeaderboardText() {
   const monthlyTop = getTopThree(data.monthly);
   const allTimeTop = getTopThree(data.allTime);
 
-  let message = "📊 ALL TIME LEADERBOARD\n\n";
+  let message = "📊 LEADERBOARD\n\n";
 
   message += "🔥 Today:\n";
   dailyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
@@ -319,7 +319,7 @@ app.post("/", async (req, res) => {
 
     // ✅ test 8PM leaderboard from chat
     // COMMAND: !test8
-    if (normalized === "!test8") {
+    if (normalized === "leaderboard") {
       await startupReady;
       if (!isReady) return res.sendStatus(200);
       await post8pmLeaderboard({ resetDaily: false });
@@ -334,8 +334,8 @@ app.post("/", async (req, res) => {
       incrementCount(user);
 
       const msg =
-        "📊 TODAYS LEADERBOARD\n\n" +
-        formatFullLeaderboard(data.daily);
+        "📊 LEADERBOARD\n\n" +
+        formatFullLeaderboard("🔥 Today:", data.daily);
 
       await postMessage(msg);
 
