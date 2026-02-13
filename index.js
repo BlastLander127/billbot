@@ -8,38 +8,54 @@ app.use(express.json());
 
 const BOT_ID = "b7fa0f75efa4469fad8594ac70";
 
-let data = {
+// ✅ DEFAULTS so data.daily/weekly/monthly always exist even if data.json is {}
+const DEFAULT_DATA = {
   daily: {},
   weekly: {},
   monthly: {},
-  lastReset: new Date().toDateString()
+  lastReset: new Date().toISOString()
 };
 
-// Load existing data if exists
+let data = { ...DEFAULT_DATA };
+
+// ✅ Load existing data if exists (merge into defaults)
 if (fs.existsSync("data.json")) {
-  data = JSON.parse(fs.readFileSync("data.json"));
+  try {
+    const raw = JSON.parse(fs.readFileSync("data.json", "utf8"));
+    data = {
+      ...DEFAULT_DATA,
+      ...raw,
+      daily: raw.daily || {},
+      weekly: raw.weekly || {},
+      monthly: raw.monthly || {}
+    };
+  } catch (e) {
+    console.error("Failed to read data.json, using defaults:", e);
+    data = { ...DEFAULT_DATA };
+  }
 }
 
 function saveData() {
   fs.writeFileSync("data.json", JSON.stringify(data, null, 2));
 }
 
+// ✅ Bulletproof increment (won't crash if structures missing)
 function incrementCount(user) {
-  if (!data.daily[user]) data.daily[user] = 0;
-  if (!data.weekly[user]) data.weekly[user] = 0;
-  if (!data.monthly[user]) data.monthly[user] = 0;
+  data.daily ||= {};
+  data.weekly ||= {};
+  data.monthly ||= {};
 
-  data.daily[user]++;
-  data.weekly[user]++;
-  data.monthly[user]++;
+  data.daily[user] = (data.daily[user] || 0) + 1;
+  data.weekly[user] = (data.weekly[user] || 0) + 1;
+  data.monthly[user] = (data.monthly[user] || 0) + 1;
 
   saveData();
 }
 
 function getTopThree(obj) {
-  return Object.entries(obj)
-    .sort((a,b) => b[1] - a[1])
-    .slice(0,3);
+  return Object.entries(obj || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
 }
 
 async function postMessage(text) {
@@ -50,7 +66,7 @@ async function postMessage(text) {
 }
 
 function formatFullLeaderboard(title, obj) {
-  const entries = Object.entries(obj).sort((a, b) => b[1] - a[1]);
+  const entries = Object.entries(obj || {}).sort((a, b) => b[1] - a[1]);
 
   let out = `${title}\n`;
   if (entries.length === 0) return out + "No bills yet today.\n";
@@ -67,10 +83,11 @@ app.post("/", async (req, res) => {
   try {
     if (req.body.sender_type === "bot") return res.sendStatus(200);
 
-    const message = req.body.text;
+    // ✅ Normalize so Bill / bill / " bill " works, but "utility bill" does NOT
+    const normalized = (req.body.text || "").trim().toLowerCase();
     const user = req.body.name;
 
-    if (message === "bill") {
+    if (normalized === "bill") {
       incrementCount(user);
 
       const msg =
@@ -88,53 +105,64 @@ app.post("/", async (req, res) => {
 });
 
 // 8PM EST cron
-cron.schedule("0 20 * * *", async () => {
-  const dailyTop = getTopThree(data.daily);
-  const weeklyTop = getTopThree(data.weekly);
-  const monthlyTop = getTopThree(data.monthly);
+cron.schedule(
+  "0 20 * * *",
+  async () => {
+    const dailyTop = getTopThree(data.daily);
+    const weeklyTop = getTopThree(data.weekly);
+    const monthlyTop = getTopThree(data.monthly);
 
-  let message = "📊 BILL LEADERBOARD\n\n";
+    let message = "📊 BILL LEADERBOARD\n\n";
 
-  message += "🔥 Today:\n";
-  dailyTop.forEach((u,i) => {
-    message += `${i+1}. ${u[0]} - ${u[1]}\n`;
-  });
+    message += "🔥 Today:\n";
+    dailyTop.forEach((u, i) => {
+      message += `${i + 1}. ${u[0]} - ${u[1]}\n`;
+    });
 
-  message += "\n📅 This Week:\n";
-  weeklyTop.forEach((u,i) => {
-    message += `${i+1}. ${u[0]} - ${u[1]}\n`;
-  });
+    message += "\n📅 This Week:\n";
+    weeklyTop.forEach((u, i) => {
+      message += `${i + 1}. ${u[0]} - ${u[1]}\n`;
+    });
 
-  message += "\n🗓 This Month:\n";
-  monthlyTop.forEach((u,i) => {
-    message += `${i+1}. ${u[0]} - ${u[1]}\n`;
-  });
+    message += "\n🗓 This Month:\n";
+    monthlyTop.forEach((u, i) => {
+      message += `${i + 1}. ${u[0]} - ${u[1]}\n`;
+    });
 
-  await postMessage(message);
+    await postMessage(message);
 
-  // Reset daily
-  data.daily = {};
-  saveData();
-
-}, {
-  timezone: "America/New_York"
-});
+    // Reset daily
+    data.daily = {};
+    saveData();
+  },
+  {
+    timezone: "America/New_York"
+  }
+);
 
 // Weekly reset (Sunday midnight)
-cron.schedule("0 0 * * 0", () => {
-  data.weekly = {};
-  saveData();
-}, {
-  timezone: "America/New_York"
-});
+cron.schedule(
+  "0 0 * * 0",
+  () => {
+    data.weekly = {};
+    saveData();
+  },
+  {
+    timezone: "America/New_York"
+  }
+);
 
 // Monthly reset
-cron.schedule("0 0 1 * *", () => {
-  data.monthly = {};
-  saveData();
-}, {
-  timezone: "America/New_York"
-});
+cron.schedule(
+  "0 0 1 * *",
+  () => {
+    data.monthly = {};
+    saveData();
+  },
+  {
+    timezone: "America/New_York"
+  }
+);
 
 app.listen(process.env.PORT || 3000, () => {
   console.log("Bill bot running");
