@@ -63,6 +63,7 @@ function formatFullLeaderboard(title, obj) {
 }
 
 app.post("/", async (req, res) => {
+  console.log("WEBHOOK HIT:", JSON.stringify(req.body));
   try {
     if (req.body.sender_type === "bot") return res.sendStatus(200);
 
