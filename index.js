@@ -18,12 +18,15 @@ const SA_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
 let sheetEvents = null;
 
+// ✅ Gate everything until startup rebuild finishes
+let startupReady = Promise.resolve();
+
 // ✅ DEFAULTS so data.* always exist
 const DEFAULT_DATA = {
   daily: {},
   weekly: {},
   monthly: {},
-  allTime: {}, // ✅ NEW
+  allTime: {},
   lastReset: new Date().toISOString()
 };
 
@@ -39,7 +42,7 @@ if (fs.existsSync("data.json")) {
       daily: raw.daily || {},
       weekly: raw.weekly || {},
       monthly: raw.monthly || {},
-      allTime: raw.allTime || {} // ✅ NEW
+      allTime: raw.allTime || {}
     };
   } catch (e) {
     console.error("Failed to read data.json, using defaults:", e);
@@ -112,7 +115,6 @@ async function initSheets() {
   });
 
   const doc = new GoogleSpreadsheet(GSHEET_ID, serviceAccountAuth);
-
   await doc.loadInfo();
 
   sheetEvents = doc.sheetsByTitle["events"];
@@ -131,7 +133,6 @@ async function logBillEvent({ groupId, user }) {
       user,
       word: "bill"
     });
-    // console.log("Sheet row added.");
   } catch (e) {
     console.error("Failed to add sheet row:", e);
   }
@@ -198,17 +199,9 @@ async function rebuildCountsFromSheet() {
 
     allTime[user] = (allTime[user] || 0) + 1;
 
-    if (ym === nowYM) {
-      monthly[user] = (monthly[user] || 0) + 1;
-    }
-
-    if (ord >= weekStartOrd) {
-      weekly[user] = (weekly[user] || 0) + 1;
-    }
-
-    if (ord === nowOrd) {
-      daily[user] = (daily[user] || 0) + 1;
-    }
+    if (ym === nowYM) monthly[user] = (monthly[user] || 0) + 1;
+    if (ord >= weekStartOrd) weekly[user] = (weekly[user] || 0) + 1;
+    if (ord === nowOrd) daily[user] = (daily[user] || 0) + 1;
   }
 
   data.daily = daily;
@@ -233,7 +226,7 @@ function build8pmLeaderboardText() {
   const dailyTop = getTopThree(data.daily);
   const weeklyTop = getTopThree(data.weekly);
   const monthlyTop = getTopThree(data.monthly);
-  const allTimeTop = getTopThree(data.allTime); // ✅ NEW
+  const allTimeTop = getTopThree(data.allTime);
 
   let message = "📊 BILL LEADERBOARD\n\n";
 
@@ -252,10 +245,8 @@ function build8pmLeaderboardText() {
   return message;
 }
 
-// ✅ Post the 8PM leaderboard (optionally reset daily)
 async function post8pmLeaderboard({ resetDaily = false } = {}) {
-  const message = build8pmLeaderboardText();
-  await postMessage(message);
+  await postMessage(build8pmLeaderboardText());
 
   if (resetDaily) {
     data.daily = {};
@@ -272,21 +263,24 @@ app.post("/", async (req, res) => {
     const user = req.body.name;
     const groupId = req.body.group_id;
 
-    // ✅ Chat command to test the 8PM board from inside the chat
-    // Type: !test8
+    // ✅ Ensure history rebuild completed before we post/count anything
     if (normalized === "!test8") {
+      await startupReady;
       await post8pmLeaderboard({ resetDaily: false });
       return res.sendStatus(200);
     }
 
     if (normalized === "bill") {
-      incrementCount(user);
+      await startupReady;
 
-      // ✅ Persist every event to Google Sheets
+      // ✅ Persist event first (source of truth)
       await logBillEvent({ groupId, user });
 
+      // ✅ Then update in-memory for immediate leaderboard
+      incrementCount(user);
+
       const msg =
-        "📊 BILL LEADERBOARD (Today so far)\n\n" +
+        "📊 TODAYS LEADERBOARD\n\n" +
         formatFullLeaderboard("🔥 Today:", data.daily);
 
       await postMessage(msg);
@@ -303,30 +297,32 @@ app.post("/", async (req, res) => {
 cron.schedule(
   "0 20 * * *",
   async () => {
+    await startupReady;
     await post8pmLeaderboard({ resetDaily: true });
   },
   { timezone: "America/New_York" }
 );
 
-// Weekly reset (Sunday midnight) — not required for correctness anymore, but OK to keep
-cron.schedule(
-  "0 0 * * 0",
-  () => {
-    data.weekly = {};
-    saveData();
-  },
-  { timezone: "America/New_York" }
-);
-
-// Monthly reset — not required for correctness anymore, but OK to keep
-cron.schedule(
-  "0 0 1 * *",
-  () => {
-    data.monthly = {};
-    saveData();
-  },
-  { timezone: "America/New_York" }
-);
+// ❌ Recommended: REMOVE these, because rebuild-from-sheet makes them unnecessary and they can make things look "reset".
+// (Leaving them active can zero out weekly/monthly until next restart rebuild.)
+//
+// cron.schedule(
+//   "0 0 * * 0",
+//   () => {
+//     data.weekly = {};
+//     saveData();
+//   },
+//   { timezone: "America/New_York" }
+// );
+//
+// cron.schedule(
+//   "0 0 1 * *",
+//   () => {
+//     data.monthly = {};
+//     saveData();
+//   },
+//   { timezone: "America/New_York" }
+// );
 
 // Keep your URL test endpoint too (optional)
 app.get("/test-8pm", async (req, res) => {
@@ -334,6 +330,7 @@ app.get("/test-8pm", async (req, res) => {
     const TEST_KEY = process.env.TEST_KEY || "123";
     if ((req.query.key || "") !== TEST_KEY) return res.status(401).send("no");
 
+    await startupReady;
     await post8pmLeaderboard({ resetDaily: true });
     res.send("Posted 8PM leaderboard (and reset daily).");
   } catch (e) {
@@ -342,13 +339,14 @@ app.get("/test-8pm", async (req, res) => {
   }
 });
 
-// ✅ NEW: connect to Sheets then rebuild counts on startup
-(async () => {
+// ✅ Connect to Sheets then rebuild counts on startup (and expose the promise)
+startupReady = (async () => {
   try {
     await initSheets();
     await rebuildCountsFromSheet();
+    console.log("Startup rebuild complete; bot is ready.");
   } catch (e) {
-    console.error("Startup init failed:", e);
+    console.error("Startup init failed (continuing without rebuild):", e);
   }
 })();
 
