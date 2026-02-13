@@ -164,6 +164,42 @@ cron.schedule(
   }
 );
 
+app.get("/test-8pm", async (req, res) => {
+  try {
+    // OPTIONAL: protect from random hits (super simple "key")
+    // Add ?key=123 in the URL and set TEST_KEY to match.
+    const TEST_KEY = process.env.TEST_KEY || "123";
+    if ((req.query.key || "") !== TEST_KEY) return res.status(401).send("no");
+
+    const dailyTop = getTopThree(data.daily);
+    const weeklyTop = getTopThree(data.weekly);
+    const monthlyTop = getTopThree(data.monthly);
+
+    let message = "📊 BILL LEADERBOARD\n\n";
+
+    message += "🔥 Today:\n";
+    dailyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
+
+    message += "\n📅 This Week:\n";
+    weeklyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
+
+    message += "\n🗓 This Month:\n";
+    monthlyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
+
+    await postMessage(message);
+
+    // OPTIONAL: reset daily like the real 8pm job
+    // comment this out if you don’t want to wipe today while testing
+    data.daily = {};
+    saveData();
+
+    res.send("Posted 8PM leaderboard (and reset daily).");
+  } catch (e) {
+    console.error(e);
+    res.status(500).send("error");
+  }
+});
+
 app.listen(process.env.PORT || 3000, () => {
   console.log("Bill bot running");
 });
