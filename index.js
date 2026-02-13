@@ -355,4 +355,3 @@ app.get("/test-8pm", async (req, res) => {
 app.listen(process.env.PORT || 3000, () => {
   console.log("Bill bot running");
 });
-});
