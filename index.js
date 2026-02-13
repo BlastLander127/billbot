@@ -49,15 +49,41 @@ async function postMessage(text) {
   });
 }
 
-app.post("/", (req, res) => {
-  const message = req.body.text;
-  const user = req.body.name;
+function formatFullLeaderboard(title, obj) {
+  const entries = Object.entries(obj).sort((a, b) => b[1] - a[1]);
 
-  if (message === "bill") {
-    incrementCount(user);
+  let out = `${title}\n`;
+  if (entries.length === 0) return out + "No bills yet today.\n";
+
+  entries.forEach(([name, count], i) => {
+    out += `${i + 1}. ${name} - ${count}\n`;
+  });
+
+  return out;
+}
+
+app.post("/", async (req, res) => {
+  try {
+    if (req.body.sender_type === "bot") return res.sendStatus(200);
+
+    const message = req.body.text;
+    const user = req.body.name;
+
+    if (message === "bill") {
+      incrementCount(user);
+
+      const msg =
+        "📊 BILL LEADERBOARD (Today so far)\n\n" +
+        formatFullLeaderboard("🔥 Today:", data.daily);
+
+      await postMessage(msg);
+    }
+
+    res.sendStatus(200);
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(200);
   }
-
-  res.sendStatus(200);
 });
 
 // 8PM EST cron
