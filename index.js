@@ -4,7 +4,8 @@ const express = require("express");
 const fs = require("fs");
 const axios = require("axios");
 const cron = require("node-cron");
-const { GoogleSpreadsheet } = require("google-spreadsheet"); // ✅ NEW
+const { GoogleSpreadsheet } = require("google-spreadsheet");
+const { JWT } = require("google-auth-library");
 
 const app = express();
 app.use(express.json());
@@ -96,16 +97,20 @@ async function initSheets() {
 
   const credsRaw = JSON.parse(SA_JSON);
 
-  // Render env var often stores \n literally; convert it back
   const creds = {
     ...credsRaw,
     private_key: (credsRaw.private_key || "").replace(/\\n/g, "\n")
   };
 
-  const doc = new GoogleSpreadsheet(GSHEET_ID);
+  // ✅ New auth method (google-spreadsheet v5+): JWT via google-auth-library
+  const serviceAccountAuth = new JWT({
+    email: creds.client_email,
+    key: creds.private_key,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"]
+  });
 
-  // ✅ v4 API:
-  await doc.useServiceAccountAuth(creds);
+  // ✅ Pass auth into constructor
+  const doc = new GoogleSpreadsheet(GSHEET_ID, serviceAccountAuth);
 
   await doc.loadInfo();
 
