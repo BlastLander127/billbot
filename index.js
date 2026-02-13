@@ -1,12 +1,21 @@
+// index.js
+
 const express = require("express");
 const fs = require("fs");
 const axios = require("axios");
 const cron = require("node-cron");
+const { GoogleSpreadsheet } = require("google-spreadsheet"); // ✅ NEW
 
 const app = express();
 app.use(express.json());
 
 const BOT_ID = "e64c9e04afde46600d609063d3";
+
+// ✅ Google Sheets env vars (set these in Render)
+const GSHEET_ID = process.env.GSHEET_ID;
+const SA_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+
+let sheetEvents = null;
 
 // ✅ DEFAULTS so data.daily/weekly/monthly always exist even if data.json is {}
 const DEFAULT_DATA = {
@@ -78,6 +87,40 @@ function formatFullLeaderboard(title, obj) {
   return out;
 }
 
+// ✅ Google Sheets init + logger
+async function initSheets() {
+  if (!GSHEET_ID || !SA_JSON) {
+    console.log("Sheets not configured (missing GSHEET_ID or GOOGLE_SERVICE_ACCOUNT_JSON)");
+    return;
+  }
+
+  const creds = JSON.parse(SA_JSON);
+  const doc = new GoogleSpreadsheet(GSHEET_ID);
+
+  await doc.useServiceAccountAuth({
+    client_email: creds.client_email,
+    private_key: creds.private_key
+  });
+
+  await doc.loadInfo();
+
+  sheetEvents = doc.sheetsByTitle["events"];
+  if (!sheetEvents) throw new Error('Sheet tab "events" not found');
+
+  console.log("Google Sheets connected:", doc.title);
+}
+
+async function logBillEvent({ groupId, user }) {
+  if (!sheetEvents) return; // If not configured, just skip
+
+  await sheetEvents.addRow({
+    timestamp: new Date().toISOString(),
+    group_id: groupId,
+    user,
+    word: "bill"
+  });
+}
+
 // ✅ Build the exact "8PM" leaderboard text in one place
 function build8pmLeaderboardText() {
   const dailyTop = getTopThree(data.daily);
@@ -87,19 +130,13 @@ function build8pmLeaderboardText() {
   let message = "📊 BILL LEADERBOARD\n\n";
 
   message += "🔥 Today:\n";
-  dailyTop.forEach((u, i) => {
-    message += `${i + 1}. ${u[0]} - ${u[1]}\n`;
-  });
+  dailyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
 
   message += "\n📅 This Week:\n";
-  weeklyTop.forEach((u, i) => {
-    message += `${i + 1}. ${u[0]} - ${u[1]}\n`;
-  });
+  weeklyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
 
   message += "\n🗓 This Month:\n";
-  monthlyTop.forEach((u, i) => {
-    message += `${i + 1}. ${u[0]} - ${u[1]}\n`;
-  });
+  monthlyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
 
   return message;
 }
@@ -120,19 +157,22 @@ app.post("/", async (req, res) => {
   try {
     if (req.body.sender_type === "bot") return res.sendStatus(200);
 
-    // ✅ Normalize so Bill / bill / " bill " works, but "utility bill" does NOT
     const normalized = (req.body.text || "").trim().toLowerCase();
     const user = req.body.name;
+    const groupId = req.body.group_id;
 
     // ✅ Chat command to test the 8PM board from inside the chat
     // Type: !test8
     if (normalized === "!test8") {
-      await post8pmLeaderboard({ resetDaily: false }); // set true if you want it to wipe daily on test
+      await post8pmLeaderboard({ resetDaily: false });
       return res.sendStatus(200);
     }
 
     if (normalized === "bill") {
       incrementCount(user);
+
+      // ✅ NEW: persist every event to Google Sheets
+      await logBillEvent({ groupId, user });
 
       const msg =
         "📊 BILL LEADERBOARD (Today so far)\n\n" +
@@ -154,9 +194,7 @@ cron.schedule(
   async () => {
     await post8pmLeaderboard({ resetDaily: true });
   },
-  {
-    timezone: "America/New_York"
-  }
+  { timezone: "America/New_York" }
 );
 
 // Weekly reset (Sunday midnight)
@@ -166,9 +204,7 @@ cron.schedule(
     data.weekly = {};
     saveData();
   },
-  {
-    timezone: "America/New_York"
-  }
+  { timezone: "America/New_York" }
 );
 
 // Monthly reset
@@ -178,9 +214,7 @@ cron.schedule(
     data.monthly = {};
     saveData();
   },
-  {
-    timezone: "America/New_York"
-  }
+  { timezone: "America/New_York" }
 );
 
 // Keep your URL test endpoint too (optional)
@@ -190,13 +224,15 @@ app.get("/test-8pm", async (req, res) => {
     if ((req.query.key || "") !== TEST_KEY) return res.status(401).send("no");
 
     await post8pmLeaderboard({ resetDaily: true });
-
     res.send("Posted 8PM leaderboard (and reset daily).");
   } catch (e) {
     console.error(e);
     res.status(500).send("error");
   }
 });
+
+// ✅ NEW: connect to Sheets on startup
+initSheets().catch(console.error);
 
 app.listen(process.env.PORT || 3000, () => {
   console.log("Bill bot running");
