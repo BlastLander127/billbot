@@ -94,13 +94,18 @@ async function initSheets() {
     return;
   }
 
-  const creds = JSON.parse(SA_JSON);
+  const credsRaw = JSON.parse(SA_JSON);
+
+  // Render env var often stores \n literally; convert it back
+  const creds = {
+    ...credsRaw,
+    private_key: (credsRaw.private_key || "").replace(/\\n/g, "\n")
+  };
+
   const doc = new GoogleSpreadsheet(GSHEET_ID);
 
-  await doc.useServiceAccountAuth({
-    client_email: creds.client_email,
-    private_key: creds.private_key
-  });
+  // ✅ v4 API:
+  await doc.useServiceAccountAuth(creds);
 
   await doc.loadInfo();
 
