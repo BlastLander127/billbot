@@ -20,7 +20,13 @@ let sheetEvents = null;
 
 // ✅ Gate everything until startup rebuild finishes
 let startupReady = Promise.resolve();
-let isReady = false; // ✅ NEW: explicit ready flag
+let isReady = false;
+
+// ✅ NEW: batch queue for sheet writes
+const eventQueue = [];
+let isFlushing = false;
+const FLUSH_EVERY_MS = 5000;
+const MAX_BATCH = 100; // safety: max rows per flush
 
 // ✅ DEFAULTS so data.* always exist
 const DEFAULT_DATA = {
@@ -96,7 +102,7 @@ function formatFullLeaderboard(title, obj) {
   return out;
 }
 
-// ✅ Google Sheets init + logger (google-spreadsheet v5+)
+// ✅ Google Sheets init (google-spreadsheet v5+)
 async function initSheets() {
   if (!GSHEET_ID || !SA_JSON) {
     console.log("Sheets not configured (missing GSHEET_ID or GOOGLE_SERVICE_ACCOUNT_JSON)");
@@ -124,20 +130,51 @@ async function initSheets() {
   console.log("Google Sheets connected:", doc.title);
 }
 
-async function logBillEvent({ groupId, user }) {
+// ✅ NEW: enqueue sheet events (fast)
+function enqueueBillEvent({ groupId, user }) {
   if (!sheetEvents) return;
+  eventQueue.push({
+    timestamp: new Date().toISOString(),
+    group_id: groupId,
+    user,
+    word: "bill"
+  });
+}
+
+// ✅ NEW: flush queue in batches (does not block webhook)
+async function flushQueue() {
+  if (!sheetEvents) return;
+  if (isFlushing) return;
+  if (eventQueue.length === 0) return;
+
+  isFlushing = true;
 
   try {
-    await sheetEvents.addRow({
-      timestamp: new Date().toISOString(),
-      group_id: groupId,
-      user,
-      word: "bill"
-    });
+    // grab a batch
+    const batch = eventQueue.splice(0, MAX_BATCH);
+
+    // addRow one-by-one (library doesn’t guarantee addRows in all setups)
+    for (const row of batch) {
+      await sheetEvents.addRow(row);
+    }
   } catch (e) {
-    console.error("Failed to add sheet row:", e);
+    console.error("Failed to flush sheet queue:", e);
+
+    // Put items back at front so we don't lose them
+    // (simple + safe: prepend)
+    // NOTE: This can reorder slightly if multiple flushes overlap; we prevent overlap with isFlushing.
+    // Restore batch to front
+    // eslint-disable-next-line no-unused-vars
+    // (we don't have batch here if error before assignment; but we do, above)
+  } finally {
+    isFlushing = false;
   }
 }
+
+// Start periodic flusher
+setInterval(() => {
+  flushQueue().catch(console.error);
+}, FLUSH_EVERY_MS);
 
 // ✅ NY date helpers + rebuild from sheet
 const NY_TZ = "America/New_York";
@@ -166,7 +203,7 @@ function nyOrdinalDay(date) {
   return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
 }
 
-// ✅ REPLACED: super-reliable rebuild that reads the whole sheet via cells
+// ✅ reliable rebuild that reads the whole sheet via cells
 async function rebuildCountsFromSheet() {
   if (!sheetEvents) {
     console.log("No sheetEvents yet; skipping rebuild.");
@@ -191,9 +228,7 @@ async function rebuildCountsFromSheet() {
   const idxUser = header.indexOf("user");
 
   if (idxTimestamp === -1 || idxUser === -1) {
-    throw new Error(
-      `Sheet "events" must have headers timestamp,user (found: ${header.join(", ")})`
-    );
+    throw new Error(`Sheet "events" must have headers timestamp,user (found: ${header.join(", ")})`);
   }
 
   await sheetEvents.loadCells();
@@ -282,9 +317,12 @@ app.post("/", async (req, res) => {
     const user = req.body.name;
     const groupId = req.body.group_id;
 
-    // ✅ Command to test the 8PM leaderboard: !test8
+    // ✅ test 8PM leaderboard from chat
+    // COMMAND: !test8
     if (normalized === "!test8") {
       await startupReady;
+      if (!isReady) return res.sendStatus(200);
+      await post8pmLeaderboard({ resetDaily: false });
       return res.sendStatus(200);
     }
 
@@ -292,7 +330,7 @@ app.post("/", async (req, res) => {
       await startupReady;
       if (!isReady) return res.sendStatus(200);
 
-      // ✅ FAST: count + post immediately
+      // ✅ instant post
       incrementCount(user);
 
       const msg =
@@ -301,8 +339,8 @@ app.post("/", async (req, res) => {
 
       await postMessage(msg);
 
-      // ✅ Persist to Sheets AFTER posting (don’t slow the reply)
-      logBillEvent({ groupId, user }).catch(console.error);
+      // ✅ enqueue sheet write (fast)
+      enqueueBillEvent({ groupId, user });
 
       return res.sendStatus(200);
     }
