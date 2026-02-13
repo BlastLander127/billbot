@@ -283,7 +283,7 @@ function build8pmLeaderboardText() {
   const monthlyTop = getTopThree(data.monthly);
   const allTimeTop = getTopThree(data.allTime);
 
-  let message = "📊 BILL LEADERBOARD\n\n";
+  let message = "📊 ALL TIME LEADERBOARD\n\n";
 
   message += "🔥 Today:\n";
   dailyTop.forEach((u, i) => (message += `${i + 1}. ${u[0]} - ${u[1]}\n`));
