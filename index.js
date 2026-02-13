@@ -165,13 +165,14 @@ function nyOrdinalDay(date) {
   return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
 }
 
+// ✅ REPLACED: paged rebuild so it counts ALL rows (not just the first batch)
 async function rebuildCountsFromSheet() {
   if (!sheetEvents) {
     console.log("No sheetEvents yet; skipping rebuild.");
     return;
   }
 
-  console.log("Rebuilding counts from Google Sheet...");
+  console.log("Rebuilding counts from Google Sheet (paged)...");
 
   const now = new Date();
   const nowOrd = nyOrdinalDay(now);
@@ -183,25 +184,37 @@ async function rebuildCountsFromSheet() {
   const monthly = {};
   const allTime = {};
 
-  const rows = await sheetEvents.getRows();
+  const LIMIT = 1000;
+  let offset = 0;
+  let totalRows = 0;
 
-  for (const r of rows) {
-    const ts = r.timestamp;
-    const user = r.user;
+  while (true) {
+    const rows = await sheetEvents.getRows({ limit: LIMIT, offset });
+    if (!rows || rows.length === 0) break;
 
-    if (!ts || !user) continue;
+    totalRows += rows.length;
 
-    const dt = new Date(ts);
-    if (Number.isNaN(dt.getTime())) continue;
+    for (const r of rows) {
+      const ts = r.timestamp;
+      const user = r.user;
 
-    const ord = nyOrdinalDay(dt);
-    const ym = getNyYMD(dt).ym;
+      if (!ts || !user) continue;
 
-    allTime[user] = (allTime[user] || 0) + 1;
+      const dt = new Date(ts);
+      if (Number.isNaN(dt.getTime())) continue;
 
-    if (ym === nowYM) monthly[user] = (monthly[user] || 0) + 1;
-    if (ord >= weekStartOrd) weekly[user] = (weekly[user] || 0) + 1;
-    if (ord === nowOrd) daily[user] = (daily[user] || 0) + 1;
+      const ord = nyOrdinalDay(dt);
+      const ym = getNyYMD(dt).ym;
+
+      allTime[user] = (allTime[user] || 0) + 1;
+
+      if (ym === nowYM) monthly[user] = (monthly[user] || 0) + 1;
+      if (ord >= weekStartOrd) weekly[user] = (weekly[user] || 0) + 1;
+      if (ord === nowOrd) daily[user] = (daily[user] || 0) + 1;
+    }
+
+    offset += rows.length;
+    if (rows.length < LIMIT) break;
   }
 
   data.daily = daily;
@@ -213,11 +226,11 @@ async function rebuildCountsFromSheet() {
   saveData();
 
   console.log("Rebuild complete.", {
+    rows: totalRows,
     dailyUsers: Object.keys(daily).length,
     weeklyUsers: Object.keys(weekly).length,
     monthlyUsers: Object.keys(monthly).length,
-    allTimeUsers: Object.keys(allTime).length,
-    rows: rows.length
+    allTimeUsers: Object.keys(allTime).length
   });
 }
 
@@ -255,7 +268,6 @@ async function post8pmLeaderboard({ resetDaily = false } = {}) {
 }
 
 app.post("/", async (req, res) => {
-  console.log("WEBHOOK HIT:", JSON.stringify(req.body));
   try {
     if (req.body.sender_type === "bot") return res.sendStatus(200);
 
@@ -263,7 +275,7 @@ app.post("/", async (req, res) => {
     const user = req.body.name;
     const groupId = req.body.group_id;
 
-    // ✅ Ensure history rebuild completed before we post/count anything
+    // ✅ test command from chat: !test8
     if (normalized === "!test8") {
       await startupReady;
       await post8pmLeaderboard({ resetDaily: false });
@@ -273,10 +285,7 @@ app.post("/", async (req, res) => {
     if (normalized === "bill") {
       await startupReady;
 
-      // ✅ Persist event first (source of truth)
-      await logBillEvent({ groupId, user });
-
-      // ✅ Then update in-memory for immediate leaderboard
+      // ✅ FAST: count + post immediately
       incrementCount(user);
 
       const msg =
@@ -284,12 +293,17 @@ app.post("/", async (req, res) => {
         formatFullLeaderboard("🔥 Today:", data.daily);
 
       await postMessage(msg);
+
+      // ✅ Persist to Sheets AFTER posting (don’t slow the bot reply)
+      logBillEvent({ groupId, user }).catch(console.error);
+
+      return res.sendStatus(200);
     }
 
-    res.sendStatus(200);
+    return res.sendStatus(200);
   } catch (e) {
     console.error(e);
-    res.sendStatus(200);
+    return res.sendStatus(200);
   }
 });
 
@@ -303,9 +317,8 @@ cron.schedule(
   { timezone: "America/New_York" }
 );
 
-// ❌ Recommended: REMOVE these, because rebuild-from-sheet makes them unnecessary and they can make things look "reset".
-// (Leaving them active can zero out weekly/monthly until next restart rebuild.)
-//
+// ✅ Recommended: REMOVE these resets since sheet rebuild makes them unnecessary and can cause confusing "resets".
+// (Leave commented out)
 // cron.schedule(
 //   "0 0 * * 0",
 //   () => {
@@ -324,7 +337,7 @@ cron.schedule(
 //   { timezone: "America/New_York" }
 // );
 
-// Keep your URL test endpoint too (optional)
+// Optional URL test endpoint
 app.get("/test-8pm", async (req, res) => {
   try {
     const TEST_KEY = process.env.TEST_KEY || "123";
@@ -332,10 +345,10 @@ app.get("/test-8pm", async (req, res) => {
 
     await startupReady;
     await post8pmLeaderboard({ resetDaily: true });
-    res.send("Posted 8PM leaderboard (and reset daily).");
+    return res.send("Posted 8PM leaderboard (and reset daily).");
   } catch (e) {
     console.error(e);
-    res.status(500).send("error");
+    return res.status(500).send("error");
   }
 });
 
