@@ -335,7 +335,7 @@ app.post("/", async (req, res) => {
 
       const msg =
         "📊 TODAYS LEADERBOARD\n\n" +
-        formatFullLeaderboard("🔥 Today:", data.daily);
+        formatFullLeaderboard(data.daily);
 
       await postMessage(msg);
 
