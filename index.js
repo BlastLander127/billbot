@@ -6,7 +6,7 @@ const cron = require("node-cron");
 const app = express();
 app.use(express.json());
 
-const BOT_ID = "b7fa0f75efa4469fad8594ac70";
+const BOT_ID = "e64c9e04afde46600d609063d3";
 
 // ✅ DEFAULTS so data.daily/weekly/monthly always exist even if data.json is {}
 const DEFAULT_DATA = {
